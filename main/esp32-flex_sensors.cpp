@@ -1,122 +1,78 @@
-#include "esp_err.h"
-#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "flex_sensor.h"
+#include "button.h"
+#include "freertos/idf_additions.h"
+#include "hal/adc_types.h"
+#include "portmacro.h"
+#include "soc/gpio_num.h"
+#include "utils.h"
 
-// #define TAG "ADC"
+//TODO report flex sensor value to other host
 
-// #define ADC_SEL_ATTEN		ADC_ATTEN_DB_12
-// #define ADC_SEL_UNIT		ADC_UNIT_1
-// #define ADC_SEL_ULP_MODE	ADC_ULP_MODE_DISABLE
-// #define ADC_SEL_CHAN_0		ADC_CHANNEL_3
+// low pass alpha
+static const float alpha = 0.5; // fifty-fifty
+static QueueHandle_t intr_queue;
 
-// constexpr float search_vt(float vs, float r1, float r2) {
-//   return vs * (r2 / (r1 + r2));
-// }
-// static float normalization(float val, float min, float max);  //TODO maybe implement RelU
-
-// static void adc_init(adc_oneshot_unit_handle_t &handle);
-// static void adc_config(adc_oneshot_unit_handle_t &handle);
-// static bool adc_config_calibrator(adc_cali_handle_t &cali_handle);
-// static void adc_clear_calibrator(adc_cali_handle_t &cali_handle);
-// static void adc_clear(adc_oneshot_unit_handle_t &handle);
-
-// //TODO
-// // the range is about 1V from straight to fully bent
-// // max is about 0.95
-// // min is about -0.02
-// #define V_REF		3.3f
-// #define R1		24000
-// #define R2_FLEX_MIN	12000
-// #define R2_FLEX_MAX	40000
-
-// constexpr float VOLTAGE_MIN = search_vt(V_REF, R1, R2_FLEX_MIN);
-// constexpr float VOLTAGE_MAX = search_vt(V_REF, R1, R2_FLEX_MAX);
+static void IRAM_ATTR btn_isr_handler(void *arg);
+static void report_flex_values(void* args);
 
 extern "C"
 void app_main(void)
 {
+  btn_setup();
+  btn_init();
+  btn_attach_isr(GPIO_NUM_18, btn_isr_handler, nullptr);
+  
+  flex_init(ADC_CHANNEL_3);
 
-  init(ADC_CHANNEL_3);
+  intr_queue = xQueueCreate(2, 0);
+  xTaskCreate(report_flex_values, "report_flex_values", 2048, NULL, 1, NULL);
+  
+  
+  float filteredValue = flex_read(ADC_CHANNEL_3);
 
   while (1) {
-    float val = read(ADC_CHANNEL_3);
-    ESP_LOGI("MAIN", "\t reading result: %f", val);
+    float val = flex_read(ADC_CHANNEL_3);
+
+    filteredValue = blend(alpha, val, filteredValue);
+    float normalized = flex_normalize_voltage(filteredValue);
+
+    ESP_LOGI("MAIN", "\t reading result (voltage):\t %f", filteredValue);    
+    ESP_LOGI("MAIN", "\t reading result (normalized):\t %f", normalized);
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
-  // ESP_LOGI(TAG, "min: %f ; max: %f", VOLTAGE_MIN, VOLTAGE_MAX);
-  // adc_oneshot_unit_handle_t adc_handle;
-  // adc_cali_handle_t adc_cali_handle;
-  // adc_init(adc_handle);
-  // adc_config(adc_handle);
-  // adc_config_calibrator(adc_cali_handle);
-
-  // while(1) {
-  //   int raw, mvoltage;
-  //   float voltage;
-  //   ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_SEL_CHAN_0, &raw));
-  //   ESP_LOGI(TAG, "ADC%d Channel[%d] raw: %d", ADC_SEL_UNIT+1, ADC_SEL_CHAN_0, raw);
-  //   ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc_cali_handle, raw, &mvoltage));
-  //   voltage = mvoltage / 1000.0f;
-  //   ESP_LOGI(TAG, "ADC%d Channel[%d] V: %f", ADC_SEL_UNIT+1, ADC_SEL_CHAN_0, voltage);
-  //   ESP_LOGI(TAG, "ADC%d Channel[%d] normalized: %f", ADC_SEL_UNIT+1, ADC_SEL_CHAN_0,
-  // 	     (normalization(voltage, VOLTAGE_MIN, VOLTAGE_MAX)));
-    
-  //   vTaskDelay(pdMS_TO_TICKS(1000));
-  // }
-  
-  // adc_clear_calibrator(adc_cali_handle);
-  // adc_clear(adc_handle);
 }
 
-// void adc_init(adc_oneshot_unit_handle_t &handle) {
-//   adc_oneshot_unit_init_cfg_t config = {
-//     .unit_id = ADC_SEL_UNIT,
-//     .ulp_mode = ADC_SEL_ULP_MODE
-//   };
+void btn_isr_handler(void *arg) {
+  xQueueSendFromISR(intr_queue, nullptr, nullptr);
+//   // float oldVal = flex_read(ADC_CHANNEL_3);
+//   // vTaskDelay(pdMS_TO_TICKS(1000)); // for smoothing
+  
+//   // float val = flex_read(ADC_CHANNEL_3);
 
-//   ESP_ERROR_CHECK(adc_oneshot_new_unit(&config, &handle));
-// }
+//   // oldVal = blend(alpha, val, oldVal);
+//   // float normalized = flex_normalize_voltage(oldVal);
 
-// void adc_config(adc_oneshot_unit_handle_t &handle) {
-//   adc_oneshot_chan_cfg_t config = {
-//     .atten = ADC_SEL_ATTEN,
-//     .bitwidth = ADC_BITWIDTH_DEFAULT
-//   };
+//   // ESP_LOGI("MAIN", "\t reading result (voltage):\t %f", oldVal);
+//   // ESP_LOGI("MAIN", "\t reading result (normalized):\t %f", normalized);
 
-//   ESP_ERROR_CHECK(adc_oneshot_config_channel(handle, ADC_SEL_CHAN_0, &config));
-// }
+//   // ESP_LOGI("MAIN", "Hello");
+}
 
-// bool adc_config_calibrator(adc_cali_handle_t &cali_handle) {
-//   bool calibrated = false;
-// #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-//   if (!calibrated) {
-//     ESP_LOGI(TAG, "calibration scheme version is %s", "Curve Fitting");
-//     adc_cali_curve_fitting_config_t cali_config = {
-//       .unit_id = ADC_SEL_UNIT,
-//       .chan = ADC_SEL_CHAN_0,
-//       .atten = ADC_SEL_ATTEN,
-//       .bitwidth = ADC_BITWIDTH_DEFAULT,
-//     };
-//     esp_err_t ret = adc_cali_create_scheme_curve_fitting(&cali_config, &cali_handle);
-//     if (ret == ESP_OK) {
-//       calibrated = true;
-//     }
-//   }
-// #endif
-//   return calibrated;
-// }
+void report_flex_values(void *args) {
+  while (1) {
+    if (xQueueReceive(intr_queue, nullptr, portMAX_DELAY)) {
+      float prevVal = flex_read(ADC_CHANNEL_3);
+      vTaskDelay(pdMS_TO_TICKS(1000)); // for smoothing
+  
+      float val = flex_read(ADC_CHANNEL_3);
 
-// void adc_clear_calibrator(adc_cali_handle_t &cali_handle) {
-//   adc_cali_delete_scheme_curve_fitting(cali_handle);
-// }
+      prevVal = blend(alpha, val, prevVal);
+      float normalized = flex_normalize_voltage(prevVal);
 
-		  
-// void adc_clear(adc_oneshot_unit_handle_t &handle) {
-//   ESP_ERROR_CHECK(adc_oneshot_del_unit(handle));
-// }
-
-
-// float normalization(float val, float min, float max) {
-//   return (val - min) / (max - min);
-// }
+      ESP_LOGI("BTN", "\t reading result (voltage):\t %f", prevVal);
+      ESP_LOGI("BTN", "\t reading result (normalized):\t %f", normalized);
+    }
+  }
+}
+  

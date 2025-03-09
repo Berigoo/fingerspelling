@@ -19,57 +19,85 @@ struct AdcHandles {
   bool calibrated = false;
 };
 
-static std::array<AdcHandles, FLEX_SENSOR_COUNT> sAdcHandlesLookup;
+static std::array<AdcHandles, FLEX_SENSOR_COUNT> s_adc_handles_lookup;
 
-static void initAdcChannel(adc_unit_t unit, adc_channel_t channel, AdcHandles& handles);
+static void init_adc_channel(adc_unit_t unit, adc_channel_t channel, AdcHandles& handles);
 
-void init(int channel) {
+void flex_init(int channel) {
   int count = 0;
   if (channel < 0) {
-    for (auto &e : sAdcHandlesLookup) {
-      initAdcChannel(ADC_UNIT, (adc_channel_t)(count+1), e);
+    for (auto &e : s_adc_handles_lookup) {
+      init_adc_channel(ADC_UNIT, (adc_channel_t)(count+1), e);
       count++;
     }
   } else {
-    initAdcChannel(ADC_UNIT, (adc_channel_t)channel, sAdcHandlesLookup[channel]);
+    init_adc_channel(ADC_UNIT, (adc_channel_t)channel, s_adc_handles_lookup[channel]);
   }
 }
 
-void clear(int channel) {
+void flex_clear(int channel) {
   if (channel < 0) {
-    for (auto &e : sAdcHandlesLookup) {
+    for (auto &e : s_adc_handles_lookup) {
       ESP_ERROR_CHECK(adc_oneshot_del_unit(e.unitHandle));
       if (e.calibrated) {
         adc_cali_delete_scheme_curve_fitting(e.caliHandle);
       }
     }
   } else {
-    ESP_ERROR_CHECK(adc_oneshot_del_unit(sAdcHandlesLookup[channel].unitHandle));
-    if (sAdcHandlesLookup[channel].calibrated) {
-      adc_cali_delete_scheme_curve_fitting(sAdcHandlesLookup[channel].caliHandle);
+    ESP_ERROR_CHECK(adc_oneshot_del_unit(s_adc_handles_lookup[channel].unitHandle));
+    if (s_adc_handles_lookup[channel].calibrated) {
+      adc_cali_delete_scheme_curve_fitting(s_adc_handles_lookup[channel].caliHandle);
     }
   }
 }
 
-float read(adc_channel_t channel) {
+float flex_read(adc_channel_t channel) {
   int raw, mvoltage;
   float voltage = -1;
-  AdcHandles* handles = &sAdcHandlesLookup[channel];
+  AdcHandles* handles = &s_adc_handles_lookup[channel];
   ESP_ERROR_CHECK(adc_oneshot_read(handles->unitHandle, channel, &raw));
-  ESP_LOGI("ADC", "ADC%d Channel[%d] raw: %d", ADC_UNIT + 1, channel, raw);
+  ESP_LOGD("ADC", "ADC%d Channel[%d] raw: %d", ADC_UNIT + 1, channel, raw);
   if (handles->calibrated) {
     ESP_ERROR_CHECK(adc_cali_raw_to_voltage(handles->caliHandle, raw, &mvoltage));
     voltage = mvoltage / 1000.0f;
-    ESP_LOGI("ADC", "ADC%d Channel[%d] V: %f", ADC_UNIT+1, channel, voltage);
-    ESP_LOGI("ADC", "ADC%d Channel[%d] normalized: %f", ADC_UNIT + 1,
+    ESP_LOGD("ADC", "ADC%d Channel[%d] V: %f", ADC_UNIT+1, channel, voltage);
+    ESP_LOGD("ADC", "ADC%d Channel[%d] normalized: %f", ADC_UNIT + 1,
 	     channel, (normalization(voltage, VOLTAGE_MIN, VOLTAGE_MAX)));
-  } else {
-    //TODO normalize the steps instead of mV 
   }
+  
   return voltage;
 }
 
-void initAdcChannel(adc_unit_t unit, adc_channel_t channel,
+float flex_read_normalized(adc_channel_t channel) {
+  AdcHandles *handles = &s_adc_handles_lookup[channel];
+  if (handles->calibrated) {
+    int raw, mvoltage;
+    float voltage = -1, normalized;
+  
+    ESP_ERROR_CHECK(adc_oneshot_read(handles->unitHandle, channel, &raw));
+    ESP_LOGD("ADC", "ADC%d Channel[%d] raw: %d", ADC_UNIT + 1, channel, raw);
+  
+    ESP_ERROR_CHECK(adc_cali_raw_to_voltage(handles->caliHandle, raw, &mvoltage));
+    voltage = mvoltage / 1000.0f;
+    normalized = normalization(voltage, VOLTAGE_MIN, VOLTAGE_MAX);
+    
+    ESP_LOGD("ADC", "ADC%d Channel[%d] V: %f", ADC_UNIT+1, channel, voltage);
+    ESP_LOGD("ADC", "ADC%d Channel[%d] normalized: %f", ADC_UNIT + 1, channel,
+	     normalized);
+
+    return normalized;
+  } else {
+    ESP_LOGE("ADC", "ADC%d Channel[%d] not successfully calibrated", ADC_UNIT+1, channel);
+    return -1.0f;
+  }
+}
+
+float flex_normalize_voltage(float v) {
+  return normalization(v, VOLTAGE_MIN, VOLTAGE_MAX);
+}
+
+
+void init_adc_channel(adc_unit_t unit, adc_channel_t channel,
                     AdcHandles &handles) {
   adc_oneshot_unit_init_cfg_t init = {
     .unit_id = ADC_UNIT,
@@ -88,7 +116,7 @@ void initAdcChannel(adc_unit_t unit, adc_channel_t channel,
 
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
   if (!handles.calibrated) {
-    ESP_LOGI("ADC", "calibration scheme version is %s", "Curve Fitting");
+    ESP_LOGD("ADC", "calibration scheme version is %s", "Curve Fitting");
     adc_cali_curve_fitting_config_t cali_config = {
       .unit_id = ADC_UNIT,
       .chan = channel,

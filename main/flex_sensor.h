@@ -15,12 +15,14 @@
  * @param channel -1 for intializing all of it
  * (incrementedd channel value) or @ref adc_channel_t struct
  */
-void init(int channel);
+void flex_init(int channel);
 /**
  * @brief deinit contructedd unit handle and cali handle (if exists)
  * @param channel target channel
  */
-void clear(int channel);
-float read(adc_channel_t channel);
+void flex_clear(int channel);
+float flex_read(adc_channel_t channel);
+float flex_read_normalized(adc_channel_t channel);
+float flex_normalize_voltage(float v);
 
 #endif // MAIN_FLEX_SENSOR
