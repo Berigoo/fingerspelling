@@ -10,19 +10,23 @@
 #include "hal/adc_types.h"
 #include "utils.h"
 
-/**
- * @brief intialize specific adc channel
- * @param channel -1 for intializing all of it
- * (incrementedd channel value) or @ref adc_channel_t struct
- */
-void flex_init(int channel);
+/* /\** */
+/*  * @brief intialize specific adc channel */
+/*  * @param channel -1 for intializing all of it */
+/*  * (incrementedd channel value) or @ref adc_channel_t struct */
+/*  *\/ */
+/* void flex_init(int channel); */
 /**
  * @brief deinit contructedd unit handle and cali handle (if exists)
  * @param channel target channel
  */
-void flex_clear(int channel);
-float flex_read(adc_channel_t channel);
-float flex_read_normalized(adc_channel_t channel);
+void *flex_create(int channel);
+float flex_read(void *handle);
+void flex_clear(void *handle);
+
+/* void flex_clear(int channel); */
+/* float flex_read(adc_channel_t channel); */
+/* float flex_read_normalized(adc_channel_t channel); */
 float flex_normalize_voltage(float v);
 
 #endif // MAIN_FLEX_SENSOR
