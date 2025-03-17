@@ -20,9 +20,10 @@
  * @brief deinit contructedd unit handle and cali handle (if exists)
  * @param channel target channel
  */
-void *flex_create(int channel);
-float flex_read(void *handle);
-void flex_clear(void *handle);
+void *adc_unit_create(int id);
+void *flex_create(void* unitHandle, int channel);
+float flex_read(void *flexHandle);
+void adc_unit_clear(void *handle);
 
 /* void flex_clear(int channel); */
 /* float flex_read(adc_channel_t channel); */

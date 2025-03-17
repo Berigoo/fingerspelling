@@ -2,6 +2,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "hal/adc_types.h"
+#include <array>
 #include <utility>
 
 //TODO
@@ -16,8 +17,15 @@
 constexpr float VOLTAGE_MIN = search_vt(V_REF, R1, R2_FLEX_MIN);
 constexpr float VOLTAGE_MAX = search_vt(V_REF, R1, R2_FLEX_MAX);
 
-struct AdcHandles {
+
+struct AdcUnitHandles {
+  adc_unit_t unitId;
   adc_oneshot_unit_handle_t unitHandle;
+};
+typedef std::pair<AdcUnitHandles, bool> unit_context_t;
+
+struct AdcHandles {
+  unit_context_t *pUnitContext; // TODO
   adc_cali_handle_t caliHandle;
   adc_channel_t channel;
 };
@@ -25,13 +33,13 @@ struct AdcHandlesInfo {
   bool isInitialized = false;
   bool isCalibrated = false;
 };
-
 typedef std::pair<AdcHandlesInfo, AdcHandles> flex_context_t;
 
-static std::array<flex_context_t, FLEX_SENSOR_COUNT> s_adc_handles_lookup;
-// static std::array<std::pair<bool, bool>, FLEX_SENSOR_COUNT> s_adc_handles_info{};
 
-static void init_adc_channel(adc_unit_t unit, adc_channel_t channel, flex_context_t& handles);
+static std::array<flex_context_t, FLEX_SENSOR_COUNT> s_adc_handles_lookup;
+static std::array<unit_context_t, 2> s_adc_unit_handles{};
+
+static void init_adc_channel(adc_channel_t channel, unit_context_t& handles, flex_context_t& flexHandle);
 
 // void flex_init(int channel) {
 //   int count = 0;
@@ -45,15 +53,34 @@ static void init_adc_channel(adc_unit_t unit, adc_channel_t channel, flex_contex
 //   }
 // }
 
-void *flex_create(int channel) {
+void *adc_unit_create(int id) {
+  for (auto& e : s_adc_unit_handles) {
+    if (!e.second) {
+      adc_oneshot_unit_init_cfg_t init = {
+	.unit_id = ADC_UNIT,
+	.ulp_mode = ADC_ULP_MODE_DISABLE
+      };
+
+      ESP_ERROR_CHECK(adc_oneshot_new_unit(&init, &e.first.unitHandle));
+      e.second = true;
+      return &e;
+    }
+  }
+  ESP_LOGE("ADC", "Failed to create adc_unit_context");
+  return nullptr;
+}
+
+void *flex_create(void *unitHandle, int channel) {
+  unit_context_t* unit = static_cast<unit_context_t*>(unitHandle);
   for (auto& e : s_adc_handles_lookup) {
     if (!e.first.isInitialized) {
-      init_adc_channel(ADC_UNIT, (adc_channel_t)channel,
+      init_adc_channel((adc_channel_t)channel, *unit,
                        e);
       e.first.isInitialized = true;
       e.second.channel = (adc_channel_t)channel;
+      e.second.pUnitContext = unit;
+      ESP_LOGD("ADC", "Adc Oneshot create at: %d channel", (adc_channel_t)channel);            
       return &e;
-      break;
     }
   }
   ESP_LOGE("ADC", "Failed to create flex_sensor_context");
@@ -63,8 +90,8 @@ void *flex_create(int channel) {
 float flex_read(void *handle) {
   int raw, mvoltage;
   float voltage = -1;
-  flex_context_t* handles = static_cast<flex_context_t*>(handle);
-  ESP_ERROR_CHECK(adc_oneshot_read(handles->second.unitHandle, handles->second.channel, &raw));
+  flex_context_t *handles = static_cast<flex_context_t *>(handle);
+  ESP_ERROR_CHECK(adc_oneshot_read(handles->second.pUnitContext->first.unitHandle, handles->second.channel, &raw));
   ESP_LOGD("ADC", "ADC%d Channel[%d] raw: %d", ADC_UNIT + 1, handles->second.channel, raw);
   if (handles->first.isCalibrated) {
     ESP_ERROR_CHECK(adc_cali_raw_to_voltage(handles->second.caliHandle, raw, &mvoltage));
@@ -77,12 +104,16 @@ float flex_read(void *handle) {
   return voltage;
 }
 
-void flex_clear(void *handle) {
-  flex_context_t *handles = static_cast<flex_context_t *>(handle);
-  ESP_ERROR_CHECK(adc_oneshot_del_unit(handles->second.unitHandle));
+void flex_clear(void *flexHandle) {
+  flex_context_t* handles = static_cast<flex_context_t*>(flexHandle);
   if (handles->first.isCalibrated) {
     adc_cali_delete_scheme_curve_fitting(handles->second.caliHandle);
   }
+}
+
+void adc_unit_clear(void *handle) {
+  unit_context_t *handles = static_cast<unit_context_t *>(handle);
+  ESP_ERROR_CHECK(adc_oneshot_del_unit(handles->first.unitHandle));
 }
 
 // void flex_clear(int channel) {
@@ -147,35 +178,30 @@ float flex_normalize_voltage(float v) {
 }
 
 
-void init_adc_channel(adc_unit_t unit, adc_channel_t channel,
-                    flex_context_t &handles) {
-  adc_oneshot_unit_init_cfg_t init = {
-    .unit_id = ADC_UNIT,
-      .ulp_mode = ADC_ULP_MODE_DISABLE
-  };
-
-  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init, &handles.second.unitHandle));
-
+void init_adc_channel(adc_channel_t channel, // TODO
+		      unit_context_t &handles, flex_context_t &flexhandle) {
   adc_oneshot_chan_cfg_t config = {
     .atten = ADC_ATTEN_DB_12,
     .bitwidth = ADC_BITWIDTH_DEFAULT
   };
 
   ESP_ERROR_CHECK(
-		  adc_oneshot_config_channel(handles.second.unitHandle, channel, &config));
+		  adc_oneshot_config_channel(handles.first.unitHandle, channel, &config));
 
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-  if (!handles.first.isCalibrated) {
+  if (!flexhandle.first.isCalibrated) {
     ESP_LOGD("ADC", "calibration scheme version is %s", "Curve Fitting");
     adc_cali_curve_fitting_config_t cali_config = {
-      .unit_id = ADC_UNIT,
+      .unit_id = handles.first.unitId,
       .chan = channel,
       .atten = ADC_ATTEN_DB_12,
       .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    esp_err_t ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handles.second.caliHandle);
+    esp_err_t ret = adc_cali_create_scheme_curve_fitting(
+        &cali_config, &flexhandle.second.caliHandle);
     if (ret == ESP_OK) {
-      handles.first.isCalibrated = true;
+      ESP_LOGD("ADC", "channel %d calibrated", channel);
+      flexhandle.first.isCalibrated = true;
     }
   }
 #else
