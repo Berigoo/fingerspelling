@@ -57,7 +57,7 @@ void *adc_unit_create(int id) {
   for (auto& e : s_adc_unit_handles) {
     if (!e.second) {
       adc_oneshot_unit_init_cfg_t init = {
-	.unit_id = ADC_UNIT,
+	.unit_id = static_cast<adc_unit_t>(id),
 	.ulp_mode = ADC_ULP_MODE_DISABLE
       };
 
