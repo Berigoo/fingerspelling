@@ -54,15 +54,13 @@ void tfSetup() {
   inference_count = 0;
 }
 
-int tfInference(float *inputs) {
-  for (int i=0; i<NUM_FEATURES; i++) {
-    input->data.f[i] = inputs[i];
+int tfInference(std::array<float,  FEAT>& in) {
+  for (int i=0; i<in.size(); i++) {
+    input->data.f[i] = in[i];
   }
   
-  ESP_LOGI("TF", "scale: %f", input->params.scale);
-
   printf("\t------------------\n");
-  for (int i = 0; i < 13; i++) {
+  for (int i = 0; i < in.size(); i++) {
     printf("%f, ", input->data.f[i]);
   }
   printf("\n\t------------------\n");

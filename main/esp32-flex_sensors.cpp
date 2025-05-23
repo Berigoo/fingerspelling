@@ -1,3 +1,4 @@
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -5,19 +6,21 @@
 #include "button.h"
 #include "freertos/idf_additions.h"
 #include "hal/adc_types.h"
+#include "hal/gpio_types.h"
 #include "hal/i2c_types.h"
 #include "portmacro.h"
 #include "soc/gpio_num.h"
 #include "training_data.h"
 #include "utils.h"
-#include "mpu60x0.h"
+#include "MPU6050_6Axis_MotionApps20.h"
+#include "MPU6050.h"
 #include "soft_i2c_master.h"
 #include <array>
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include "tf.h"
 
-//TODO report flex sensor value to other host
+#define CONTACT_PIN GPIO_NUM_38
 
 static const float a = 0.5; // for basic linear interpolation
 static QueueHandle_t intr_queue;
@@ -38,11 +41,45 @@ static void *s_flexMiddleContext;
 static void *s_flexRingContext;
 static void *s_flexPinkyContext;
 
+
+uint16_t packetSize = 42; // expected DMP packet size (default is 42 bytes)
+// TODO become a member class 
+static uint16_t fifoCount0;
+static uint8_t fifoBuffer0[64];
+static float euler0[3];
+static uint16_t fifoCount1;
+static uint8_t fifoBuffer1[64];
+static float euler1[3];
+static uint16_t fifoCount2;
+static uint8_t fifoBuffer2[64];
+static float euler2[3];
+static uint16_t fifoCount3;
+static uint8_t fifoBuffer3[64];
+static float euler3[3];
+static uint16_t fifoCount4;     
+static uint8_t fifoBuffer4[64];
+static float euler4[3];
+static uint16_t fifoCount5;     
+static uint8_t fifoBuffer5[65];
+static float euler5[3];
+// TODO dispatch to a task
+static bool getEulerMPU(MPU6050 &mpu, uint8_t *fifoBuffer, uint16_t &fifoCount,
+                        uint16_t packetSize, float out[3]);
+
+
 extern "C" void app_main(void) {
   tfSetup();
-  // btn_setup();
-  // btn_init();
-  // btn_attach_isr(GPIO_NUM_18, btn_isr_handler, nullptr);
+
+  {
+    gpio_config_t contact = {};
+    contact.intr_type = GPIO_INTR_DISABLE;
+    contact.mode = GPIO_MODE_INPUT;
+    contact.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    contact.pull_up_en = GPIO_PULLUP_ENABLE;
+    contact.pin_bit_mask = (1ULL << CONTACT_PIN);
+    gpio_config(&contact);
+  }
+  
   {
     i2c_master_bus_config_t i2c_mst_config = {};
     i2c_mst_config.clk_source = I2C_CLK_SRC_DEFAULT;
@@ -77,11 +114,13 @@ extern "C" void app_main(void) {
   s_adcUnitContext = adc_unit_create(ADC_UNIT_1);
   s_adcUnitContext2 = adc_unit_create(ADC_UNIT_2);
 
-  Mpu mpuBack(s_i2cHandle2, 400000, false, 512.0f, 0.9f);
-  Mpu mpuIndex(s_i2cHandle1, 400000, false, 512.0f, 0.9f);
-  Mpu mpuMiddle(s_i2cHandle1, 400000, true, 512.0f, 0.9f);
-  Mpu mpuRing(s_i2cHandle2, 400000, true, 512.0f, 0.9);
-  Mpu mpuPinky(s_i2cHandle3, false, 512.0f, 0.9f);
+  MPU6050 mpuBack(s_i2cHandle2, 400000, false);
+  MPU6050 mpuIndex(s_i2cHandle1, 400000, false);
+  MPU6050 mpuMiddle(s_i2cHandle1, 400000, true);
+  MPU6050 mpuRing(s_i2cHandle2, 400000, true);
+  MPU6050 mpuPinky(s_i2cHandle3, false);
+  MPU6050 mpuThumb(s_i2cHandle3, true);
+
 
   s_flexThumbContext = flex_create(s_adcUnitContext, ADC_CHANNEL_5); // GPIO 6
   s_flexIndexContext = flex_create(s_adcUnitContext2, ADC_CHANNEL_9); // GPIO 20
@@ -100,12 +139,27 @@ extern "C" void app_main(void) {
 
   size_t currTime = esp_timer_get_time();
   const size_t updateTime = 2000000;
+
+  // ----
+  {
+    gpio_config_t btn = {};
+    btn.intr_type = GPIO_INTR_DISABLE;
+    btn.mode = GPIO_MODE_INPUT;
+    btn.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    btn.pull_up_en = GPIO_PULLUP_DISABLE;
+    btn.pin_bit_mask = (1ULL << GPIO_NUM_39);
+    gpio_config(&btn);
+  }
+  bool isPressed = false;
+  bool isToggled = false;
+  // ----
   while (1) {
-    mpuBack.update();
-    mpuIndex.update();
-    mpuMiddle.update();
-    mpuRing.update();
-    mpuPinky.update();
+    mpuBack.update(42);
+    mpuIndex.update(42);
+    mpuMiddle.update(42);
+    mpuRing.update(42);
+    mpuPinky.update(42);
+    mpuThumb.update(42);
     
     float val_0 = flex_read(s_flexThumbContext);
     float val_1 = flex_read(s_flexIndexContext);
@@ -125,54 +179,85 @@ extern "C" void app_main(void) {
     float normalized_3 = flex_normalize_voltage(filtered_value_3);
     float normalized_4 = flex_normalize_voltage(filtered_value_4);
 
-    float angle1 = mpuGetInbetweenDeg(mpuBack, mpuIndex) * M_PI / 180.0f;
-    float angle2 = mpuGetInbetweenDeg(mpuBack, mpuMiddle) * M_PI / 180.0f; 
-    float angle3 = mpuGetInbetweenDeg(mpuBack, mpuRing) * M_PI / 180.0f;
-    float angle4 = mpuGetInbetweenDeg(mpuBack, mpuPinky) * M_PI / 180.0f;
-
+    // float angle1 = mpuGetInbetweenDeg(mpuBack, mpuIndex) * M_PI / 180.0f;
+    // float angle2 = mpuGetInbetweenDeg(mpuBack, mpuMiddle) * M_PI / 180.0f;
+    // float angle3 = mpuGetInbetweenDeg(mpuBack, mpuRing) * M_PI / 180.0f;
+    // float angle4 = mpuGetInbetweenDeg(mpuBack, mpuPinky) * M_PI / 180.0f;
+    // float angle5 = mpuGetInbetweenDeg(mpuBack, mpuThumb) * M_PI / 180.0f;
+    // float angle1 = () * M_PI / 180.0f;
+    // float angle2 = mpuGetInbetweenDeg(mpuBack, mpuMiddle) * M_PI / 180.0f; 
+    // float angle3 = mpuGetInbetweenDeg(mpuBack, mpuRing) * M_PI / 180.0f;
+    // float angle4 = mpuGetInbetweenDeg(mpuBack, mpuPinky) * M_PI / 180.0f;
+    // float angle5 = mpuGetInbetweenDeg(mpuBack, mpuThumb) * M_PI / 180.0f; 
     // float angle1 = 60.209991 ;
     // float angle2 = 62.348457 ;
     // float angle3 = 60.422966 ;
     // float angle4 = 62.245049 ;
 
+    // float backPitch = mpuBack.getPitch() * M_PI / 180.0f;
+    // float backRoll = mpuBack.getRoll() * M_PI / 180.0f;
+    // float backPitch = euler0[1] * M_PI / 180.0f;
+    // float backRoll = euler0[2] * M_PI / 180.0f;
+    
+    bool isContacted = !gpio_get_level(CONTACT_PIN);
 
-    if (esp_timer_get_time() - currTime > updateTime){
-      ESP_LOGI("MAIN", "%f,%f,%f,%f,%f,%f,%f,%f,%f", normalized_0, normalized_1,
-               normalized_2, normalized_3, normalized_4, angle1, angle2, angle3,
-               angle4);
+    // if (esp_timer_get_time() - currTime > updateTime) {
+    //   float p1 = mpuBack.getPitch();
+    //   float r1 = mpuBack.getRoll();
+    //   float p2 = mpuThumb.getPitch();
+    //   float r2 = mpuThumb.getRoll();
+    //   float d = std::abs(r2) - std::abs(r1);
+    //   float rel = ((p2 * std::cos(45.0f * M_PI/180)) - (p1 * std::cos(45.0f * M_PI / 180.0f))) * M_PI / 180.0f;
 
-      std::array<float, 13> input{
-          normalized_0,     normalized_1,     normalized_2,
-          normalized_3,     normalized_4,     std::sin(angle1),
-          std::cos(angle1), std::sin(angle2), std::cos(angle2),
-          std::sin(angle3), std::cos(angle3), std::sin(angle4),
-          std::cos(angle4)
+    //   std::array<float, 20> input{
+    //       normalized_0,       normalized_1,       normalized_2,
+    //       normalized_3,       normalized_4,      std::sin(angle1),
+    //       std::cos(angle1),   std::sin(angle2),   std::cos(angle2),
+    //       std::sin(angle3),   std::cos(angle3),   std::sin(angle4),
+    //       std::cos(angle4),   std::sin(rel),      std::cos(rel),
+    //       std::sin(backRoll), std::cos(backRoll), std::sin(backPitch),
+    //       std::cos(backPitch), (isContacted) ? 1.0f : 0.0f};
 
-      };
 
-      // std::array<float_t, 13> input {
-      //   -0.31149566173553467, -0.9407646656036377, -0.2282748967409134,
-      //       0.001249765744432807, -0.013378581032156944, -1.4272600412368774,
-      //       0.8681797981262207, -1.740282654762268, 1.068088173866272,
-      //       0.04834785312414169, 0.22689466178417206, 0.2733452618122101,
-      // 	     -0.04030461981892586
-      // };
-
-      for (int i = 0; i < input.size(); i++) {
-	input.at(i) = (input[i] - SCALER_MEAN[i]) / SCALER_STD[i];
-      }
+    //   // std::array<float_t, 20> input{0.881502628326416,    1.2652605772018433,
+    //   //                               1.1429119110107422,   0.4233283996582031,
+    //   //                               0.8364360332489014,   1.8322868347167969,
+    //   //                               -1.2049839496612549,  1.0300217866897583,
+    //   //                               0.19515833258628845,  0.999482274055481,
+    //   //                               -0.30864647030830383, 0.9977184534072876,
+    //   //                               -0.28897514939308167, 1.0515714883804321,
+    //   //                               0.472451776266098,    0.19714051485061646,
+    //   //                               0.31169363856315613,  -0.8495103716850281,
+    //   //                               -1.2806310653686523,  1.0};
       
-      int out = tfInference(input.data());
 
-      ESP_LOGI("MAIN", "out: %c", LABELS_NAME[out]);
-      currTime = esp_timer_get_time();
-    }
+    //   for (int i = 0; i < NUM_FEATURES; i++) {
+    // 	input.at(i) = (input[i] - SCALER_MEAN[i]) / SCALER_STD[i];
+    //   }
 
-    // ESP_LOGI("MAIN", "angle: %f : %f : %f : %f", angle1, angle2, angle3,
-    // angle4);
-    // ESP_LOGI("MAIN", "pitch: %f : %f : %f : %f : %f", pitch1, pitch2, pitch3,
-    // 	     pitch4, pitch5);
+    //   int out = tfInference(input);
 
+    //   ESP_LOGI("MAIN", "out: %c", LABELS_NAME[out]);
+    //   currTime = esp_timer_get_time();
+    // }
+
+    
+
+    // if (gpio_get_level(GPIO_NUM_39) && isToggled) {
+    //   // ESP_LOGI("MAIN", "%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d", normalized_0,
+    //   //          normalized_1, normalized_2, normalized_3, normalized_4,
+    //   //          backPitch, backRoll, angle1, angle2, angle3, angle4, angle5,
+    //   //          isContacted);
+    //   printf( "%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d\n", normalized_0,
+    //            normalized_1, normalized_2, normalized_3, normalized_4,
+    //            backPitch, backRoll, angle1, angle2, angle3, angle4, rel, isContacted);
+    //   isToggled = false;
+    // } else if (!gpio_get_level(GPIO_NUM_39) && !isToggled) {
+    //   isToggled = true;
+    // }
+     // printf( "%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d\n", normalized_0,
+     //           normalized_1, normalized_2, normalized_3, normalized_4,
+     //           backPitch, backRoll, angle1, angle2, angle3, angle4, rel, isContacted);
   }
 }
 
@@ -199,4 +284,36 @@ extern "C" void app_main(void) {
 //     }
 //   }
 // }
-  
+
+bool getEulerMPU(MPU6050 &mpu, uint8_t *fifoBuffer, uint16_t &fifoCount,
+                 uint16_t packetSize, float out[3]) {
+  uint8_t mpuIntStatus = mpu.getIntStatus();
+  // get current FIFO count
+  fifoCount = mpu.getFIFOCount();
+
+  if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+    // reset so we can continue cleanly
+    mpu.resetFIFO();
+
+    return false;
+    // otherwise, check for DMP data ready interrupt frequently)
+  } else if (mpuIntStatus & 0x02) {
+    // wait for correct available data length, should be a VERY short wait
+    while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+
+    // read a packet from FIFO
+    Quaternion q;
+    VectorFloat gravity;
+    
+    mpu.getFIFOBytes(fifoBuffer, packetSize);
+    mpu.dmpGetQuaternion(&q, fifoBuffer);
+    mpu.dmpGetGravity(&gravity, &q);
+    mpu.dmpGetYawPitchRoll(out, &q, &gravity);
+
+    // printf("YAW: %3.1f, ", ypr[0] * 180/M_PI);
+    // printf("PITCH: %3.1f, ", ypr[1] * 180/M_PI);
+    // printf("ROLL: %3.1f \n", ypr[2] * 180 / M_PI);
+    return true;
+  }
+  return false;
+}
