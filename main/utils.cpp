@@ -13,36 +13,36 @@ float blend(float alpha, float new_val, float prev_val) {
   return (alpha * new_val) + ((1 - alpha) * prev_val);
 }
 
-float mpuGetInbetweenDeg(Mpu &head, Mpu &tail, uint8_t &&target) {
-  float theta1, y;
-  int nose1=1, nose2=1;
-  switch (target) {
-  case 1:
-    theta1 = head.getPitch();
-    y = tail.getPitch();
-    nose1 = (abs(head.getRoll()) > 95) ? -1 : 1;
-    nose2 = (abs(head.getRoll()) > 95) ? -1 : 1;
-    break;
-  case 2:
-    theta1 = head.getYaw();
-    y = tail.getYaw();
-    break;
-  default:
-    theta1 = head.getRoll();
-    y = tail.getRoll();
-    break;
-  }
+// float mpuGetInbetweenDeg(Mpu &head, Mpu &tail, uint8_t &&target) {
+//   float theta1, y;
+//   int nose1=1, nose2=1;
+//   switch (target) {
+//   case 1:
+//     theta1 = head.getPitch();
+//     y = tail.getPitch();
+//     nose1 = (abs(head.getRoll()) > 95) ? -1 : 1;
+//     nose2 = (abs(head.getRoll()) > 95) ? -1 : 1;
+//     break;
+//   case 2:
+//     theta1 = head.getYaw();
+//     y = tail.getYaw();
+//     break;
+//   default:
+//     theta1 = head.getRoll();
+//     y = tail.getRoll();
+//     break;
+//   }
 
-  float out = (-nose1 * theta1) + (nose2 * y);
+//   float out = (-nose1 * theta1) + (nose2 * y);
 
-  if (out < 0 && nose1 < 0)
-    out += 180;
-  else if (out > 0 && nose1 < 0)
-    out += 180;
-  else if (out < 0 && nose1 > 0)
-    out += 360;
-  return out;
-}
+//   if (out < 0 && nose1 < 0)
+//     out += 180;
+//   else if (out > 0 && nose1 < 0)
+//     out += 180;
+//   else if (out < 0 && nose1 > 0)
+//     out += 360;
+//   return out;
+// }
 
 // int inference(std::array<float, 13> &input) {
 //   std::array<float, 13> tmp = input;
